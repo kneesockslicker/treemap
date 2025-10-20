@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<meta charset="utf--8">
+<title>Course Bidding Treemap with Tooltips</title>
+<style>
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  margin: auto;
+  position: relative;
+  width: 100%;
+}
+
+h1 {
+    text-align: center;
+    color: #343a40;
+}
+
+form {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  background-color: #fff;
+  padding: 8px 12px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  z-index: 10;
+}
+
+.node {
+  border: solid 1px white;
+  font: 10px sans-serif;
+  line-height: 12px;
+  overflow: hidden;
+  position: absolute;
+  text-indent: 2px;
+  color: white;
+  text-shadow: 1px 1px 2px rgba(0,0,0,0.4);
+  box-sizing: border-box; /* Ensures padding and border are included in the element's total width and height */
+}
+
+/* --- Style for the tooltip --- */
+.tooltip {
+    position: absolute;
+    text-align: left;
+    padding: 8px;
+    font: 12px sans-serif;
+    background: #f0f0f0;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    pointer-events: none; /* Prevents the tooltip from interfering with mouse events */
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+</style>
+<body>
+
+<h1>Course Bidding Analysis</h1>
+
+<form>
+  <label><input type="radio" name="mode" value="size" checked> Value (Median Bid)</label>
+  <label><input type="radio" name="mode" value="count"> Count (Sections)</label>
+</form>
+
+<script src="//d3js.org/d3.v4.min.js"></script>
+<script>
+'use strict';
+
+// --- 1. SETUP ---
+const margin = {top: 40, right: 10, bottom: 10, left: 10},
+      width = window.innerWidth - margin.left - margin.right - 40,  // Use most of screen width
+      height = window.innerHeight - margin.top - margin.bottom - 100, // Use most of screen height
+      color = d3.scaleOrdinal(d3.schemeCategory20); // Using a different color scheme for better distinction
+
+const treemap = d3.treemap()
+    .size([width, height])
+    .paddingInner(1); // Add a little space between nodes
+
+const div = d3.select("body").append("div")
+    .style("position", "relative")
+    .style("width", (width + margin.left + margin.right) + "px")
+    .style("height", (height + margin.top + margin.bottom) + "px")
+    .style("left", margin.left + "px")
+    .style("top", margin.top + "px");
+
+// --- 2. TOOLTIP SETUP ---
+const tooltip = d3.select("body").append("div")
+    .attr("class", "tooltip");
+
+
+// --- 3. DATA LOADING & VISUALIZATION ---
+d3.json("biddingData2.json", function(error, data) {
+  if (error) throw error;
+
+  const root = d3.hierarchy(data, (d) => d.children)
+    .sum((d) => d.size); // Initial view is by size (median bid)
+
+  const tree = treemap(root);
+
+  // --- 4. DRAW NODES & ADD TOOLTIP EVENTS ---
+  const node = div.datum(root).selectAll(".node")
+      .data(tree.leaves())
+    .enter().append("div")
+      .attr("class", "node")
+      .style("left", (d) => d.x0 + "px")
+      .style("top", (d) => d.y0 + "px")
+      .style("width", (d) => Math.max(0, d.x1 - d.x0) + "px")
+      .style("height", (d) => Math.max(0, d.y1 - d.y0) + "px")
+      // Color by the top-level parent (School) for consistent coloring
+      .style("background", (d) => color(d.parent.parent.data.name))
+      .text((d) => d.data.name)
+      // Add mouse events for the tooltip
+      .on("mouseover", function(d) {
+        const mousePos = d3.mouse(div.node());
+        tooltip.transition()
+          .duration(200)
+          .style("opacity", .95);
+        
+        // --- UPDATED TOOLTIP LOGIC ---
+        // For a course node 'd':
+        // - 'd.parent' is the Term node.
+        // - 'd.parent.parent' is the School node.
+        const schoolName = d.parent.parent.data.name;
+        const termName = d.parent.data.name; 
+        
+        const selectedMode = d3.select('input[name="mode"]:checked').property("value");
+        let tooltipHtml = `<strong>${d.data.name}</strong><br/>` +
+                          `<strong>School:</strong> ${schoolName}<br/>` +
+                          `<strong>Term:</strong> ${termName}<br/>`;
+
+        if (selectedMode === 'size') {
+            tooltipHtml += `<strong>Avg. Median Bid:</strong> $${d.data.size.toFixed(2)}<br/>` +
+                           `<strong>Sections:</strong> ${d.data.count}`;
+        } else { // mode is 'count'
+            tooltipHtml += `<strong>Sections:</strong> ${d.data.count}<br/>`+
+                           `<strong>Avg. Median Bid:</strong> $${d.data.size.toFixed(2)}`;
+        }
+
+        tooltip.html(tooltipHtml)
+          .style("left", (mousePos[0] + margin.left + 10) + "px")
+          .style("top", (mousePos[1] + margin.top - 10) + "px");
+      })
+      .on("mousemove", function(d) {
+        const mousePos = d3.mouse(div.node());
+        tooltip.style("left", (mousePos[0] + margin.left + 10) + "px")
+               .style("top", (mousePos[1] + margin.top - 10) + "px");
+      })
+      .on("mouseout", function(d) {
+        tooltip.transition()
+          .duration(500)
+          .style("opacity", 0);
+      });
+
+  // --- 5. INTERACTIVITY ---
+  d3.selectAll("input").on("change", function change() {
+    const value = this.value === "count"
+        ? (d) => d.count // Use section count for sizing
+        : (d) => d.size;  // Use median bid for sizing
+
+    const newRoot = d3.hierarchy(data, (d) => d.children)
+      .sum(value);
+
+    node.data(treemap(newRoot).leaves())
+      .transition()
+        .duration(1500)
+        .style("left", (d) => d.x0 + "px")
+        .style("top", (d) => d.y0 + "px")
+        .style("width", (d) => Math.max(0, d.x1 - d.x0) + "px")
+        .style("height", (d) => Math.max(0, d.y1 - d.y0) + "px")
+  });
+});
+
+</script>
+</body>
+</html>
+
