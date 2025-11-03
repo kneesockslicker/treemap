@@ -1,6 +1,6 @@
 <!DOCTYPE html>
-<meta charset="utf--8">
-<title>Course Bidding Treemap with Tooltips</title>
+<meta charset="utf-8">
+<title>Course Bidding Treemap with Drill-down</title>
 <style>
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
@@ -25,19 +25,52 @@ form {
   z-index: 10;
 }
 
+#breadcrumb {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  background-color: #fff;
+  padding: 8px 12px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  z-index: 10;
+  font-size: 14px;
+  color: #666;
+}
+
+#breadcrumb .clickable {
+  cursor: pointer;
+  color: #007bff;
+  text-decoration: underline;
+}
+
+#breadcrumb .clickable:hover {
+  color: #0056b3;
+}
+
 .node {
   border: solid 1px white;
-  font: 10px sans-serif;
-  line-height: 12px;
+  font: 12px sans-serif;
+  line-height: 14px;
   overflow: hidden;
   position: absolute;
   text-indent: 2px;
   color: white;
   text-shadow: 1px 1px 2px rgba(0,0,0,0.4);
-  box-sizing: border-box; /* Ensures padding and border are included in the element's total width and height */
+  box-sizing: border-box;
+  cursor: pointer;
+  transition: opacity 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 4px;
 }
 
-/* --- Style for the tooltip --- */
+.node:hover {
+  opacity: 0.8;
+}
+
 .tooltip {
     position: absolute;
     text-align: left;
@@ -46,15 +79,20 @@ form {
     background: #f0f0f0;
     border: 1px solid #ccc;
     border-radius: 8px;
-    pointer-events: none; /* Prevents the tooltip from interfering with mouse events */
+    pointer-events: none;
     opacity: 0;
     transition: opacity 0.2s;
+    z-index: 100;
 }
 
 </style>
 <body>
 
 <h1>Course Bidding Analysis</h1>
+
+<div id="breadcrumb">
+  <span class="clickable" id="root-crumb">All Schools</span>
+</div>
 
 <form>
   <label><input type="radio" name="mode" value="size" checked> Value (Median Bid)</label>
@@ -67,13 +105,15 @@ form {
 
 // --- 1. SETUP ---
 const margin = {top: 40, right: 10, bottom: 10, left: 10},
-      width = window.innerWidth - margin.left - margin.right - 40,  // Use most of screen width
-      height = window.innerHeight - margin.top - margin.bottom - 100, // Use most of screen height
-      color = d3.scaleOrdinal(d3.schemeCategory20); // Using a different color scheme for better distinction
+      width = window.innerWidth - margin.left - margin.right - 40,
+      height = window.innerHeight - margin.top - margin.bottom - 100,
+      color = d3.scaleOrdinal(d3.schemeCategory20);
 
 const treemap = d3.treemap()
     .size([width, height])
-    .paddingInner(1); // Add a little space between nodes
+    .paddingInner(3)
+    .paddingOuter(2)
+    .round(true);
 
 const div = d3.select("body").append("div")
     .style("position", "relative")
@@ -82,59 +122,120 @@ const div = d3.select("body").append("div")
     .style("left", margin.left + "px")
     .style("top", margin.top + "px");
 
-// --- 2. TOOLTIP SETUP ---
 const tooltip = d3.select("body").append("div")
     .attr("class", "tooltip");
 
+let currentNode = null;
+let fullData = null;
+let navigationStack = []; // Track navigation history
 
-// --- 3. DATA LOADING & VISUALIZATION ---
+// --- 2. DATA LOADING & VISUALIZATION ---
 d3.json("biddingData2.json", function(error, data) {
   if (error) throw error;
+  
+  fullData = data;
+  
+  // Start by showing schools
+  displayLevel(data);
+  
+  // Set up breadcrumb click
+  d3.select("#root-crumb").on("click", function() {
+    navigationStack = [];
+    displayLevel(fullData);
+  });
+});
 
-  const root = d3.hierarchy(data, (d) => d.children)
-    .sum((d) => d.size); // Initial view is by size (median bid)
+function displayLevel(data) {
+  currentNode = data;
+  
+  // Update breadcrumb
+  updateBreadcrumb();
+  
+  // Determine current mode
+  const selectedMode = d3.select('input[name="mode"]:checked').property("value");
+  const valueFunc = selectedMode === "count" ? d => d.count || 0 : d => d.size || 0;
+  
+  const root = d3.hierarchy(data, d => d.children)
+    .sum(valueFunc)
+    .sort((a, b) => b.value - a.value);
 
-  const tree = treemap(root);
+  treemap(root);
 
-  // --- 4. DRAW NODES & ADD TOOLTIP EVENTS ---
-  const node = div.datum(root).selectAll(".node")
-      .data(tree.leaves())
+  // Clear existing nodes
+  div.selectAll(".node").remove();
+
+  // Create new nodes - only show immediate children
+  const nodes = div.selectAll(".node")
+      .data(root.children || [])
     .enter().append("div")
       .attr("class", "node")
-      .style("left", (d) => d.x0 + "px")
-      .style("top", (d) => d.y0 + "px")
-      .style("width", (d) => Math.max(0, d.x1 - d.x0) + "px")
-      .style("height", (d) => Math.max(0, d.y1 - d.y0) + "px")
-      // Color by the top-level parent (School) for consistent coloring
-      .style("background", (d) => color(d.parent.parent.data.name))
-      .text((d) => d.data.name)
-      // Add mouse events for the tooltip
+      .style("left", d => d.x0 + "px")
+      .style("top", d => d.y0 + "px")
+      .style("width", d => Math.max(0, d.x1 - d.x0) + "px")
+      .style("height", d => Math.max(0, d.y1 - d.y0) + "px")
+      .style("background", d => {
+        // Color based on the school level
+        const schoolName = navigationStack.length > 0 ? navigationStack[0].name : d.data.name;
+        return color(schoolName);
+      })
+      .html(d => {
+        const area = (d.x1 - d.x0) * (d.y1 - d.y0);
+        // Only show text if area is big enough
+        if (area > 1000) {
+          return `<div>${d.data.name}</div>`;
+        }
+        return '';
+      })
+      .on("click", function(d) {
+        d3.event.stopPropagation();
+        
+        // Check if this node has children to drill into
+        if (d.data.children && d.data.children.length > 0) {
+          // Add to navigation stack
+          navigationStack.push({
+            name: d.data.name,
+            data: d.data
+          });
+          displayLevel(d.data);
+        }
+      })
       .on("mouseover", function(d) {
         const mousePos = d3.mouse(div.node());
         tooltip.transition()
           .duration(200)
           .style("opacity", .95);
         
-        // --- UPDATED TOOLTIP LOGIC ---
-        // For a course node 'd':
-        // - 'd.parent' is the Term node.
-        // - 'd.parent.parent' is the School node.
-        const schoolName = d.parent.parent.data.name;
-        const termName = d.parent.data.name; 
+        let tooltipHtml = `<strong>${d.data.name}</strong><br/>`;
+        
+        // Add context based on current level
+        if (navigationStack.length === 0) {
+          // At school level
+          tooltipHtml += `<em>Click to view terms</em><br/>`;
+        } else if (navigationStack.length === 1) {
+          // At term level
+          tooltipHtml += `<strong>School:</strong> ${navigationStack[0].name}<br/>`;
+          tooltipHtml += `<em>Click to view courses</em><br/>`;
+        } else if (navigationStack.length === 2) {
+          // At course level (leaf nodes)
+          tooltipHtml += `<strong>School:</strong> ${navigationStack[0].name}<br/>`;
+          tooltipHtml += `<strong>Term:</strong> ${navigationStack[1].name}<br/>`;
+        }
         
         const selectedMode = d3.select('input[name="mode"]:checked').property("value");
-        let tooltipHtml = `<strong>${d.data.name}</strong><br/>` +
-                          `<strong>School:</strong> ${schoolName}<br/>` +
-                          `<strong>Term:</strong> ${termName}<br/>`;
-
         if (selectedMode === 'size') {
-            tooltipHtml += `<strong>Avg. Median Bid:</strong> $${d.data.size.toFixed(2)}<br/>` +
-                           `<strong>Sections:</strong> ${d.data.count}`;
-        } else { // mode is 'count'
-            tooltipHtml += `<strong>Sections:</strong> ${d.data.count}<br/>`+
-                           `<strong>Avg. Median Bid:</strong> $${d.data.size.toFixed(2)}`;
+          if (d.data.size !== undefined) {
+            tooltipHtml += `<strong>Median Bid:</strong> $${d.data.size.toFixed(2)}`;
+          } else {
+            tooltipHtml += `<strong>Total Value:</strong> $${d.value.toFixed(2)}`;
+          }
+        } else {
+          if (d.data.count !== undefined) {
+            tooltipHtml += `<strong>Sections:</strong> ${d.data.count}`;
+          } else {
+            tooltipHtml += `<strong>Total Sections:</strong> ${d.value}`;
+          }
         }
-
+        
         tooltip.html(tooltipHtml)
           .style("left", (mousePos[0] + margin.left + 10) + "px")
           .style("top", (mousePos[1] + margin.top - 10) + "px");
@@ -149,24 +250,47 @@ d3.json("biddingData2.json", function(error, data) {
           .duration(500)
           .style("opacity", 0);
       });
+}
 
-  // --- 5. INTERACTIVITY ---
-  d3.selectAll("input").on("change", function change() {
-    const value = this.value === "count"
-        ? (d) => d.count // Use section count for sizing
-        : (d) => d.size;  // Use median bid for sizing
-
-    const newRoot = d3.hierarchy(data, (d) => d.children)
-      .sum(value);
-
-    node.data(treemap(newRoot).leaves())
-      .transition()
-        .duration(1500)
-        .style("left", (d) => d.x0 + "px")
-        .style("top", (d) => d.y0 + "px")
-        .style("width", (d) => Math.max(0, d.x1 - d.x0) + "px")
-        .style("height", (d) => Math.max(0, d.y1 - d.y0) + "px")
+function updateBreadcrumb() {
+  const breadcrumb = d3.select("#breadcrumb");
+  
+  let breadcrumbHtml = '<span class="clickable" id="root-crumb">All Schools</span>';
+  
+  navigationStack.forEach((item, index) => {
+    if (index < navigationStack.length - 1) {
+      // Clickable intermediate levels
+      breadcrumbHtml += ` > <span class="clickable level-${index}">${item.name}</span>`;
+    } else {
+      // Current level (not clickable)
+      breadcrumbHtml += ` > <span>${item.name}</span>`;
+    }
   });
+  
+  breadcrumb.html(breadcrumbHtml);
+  
+  // Re-attach click handlers
+  d3.select("#root-crumb").on("click", function() {
+    navigationStack = [];
+    displayLevel(fullData);
+  });
+  
+  // Attach handlers for intermediate levels
+  navigationStack.forEach((item, index) => {
+    if (index < navigationStack.length - 1) {
+      d3.select(`.level-${index}`).on("click", function() {
+        // Navigate back to this level
+        navigationStack = navigationStack.slice(0, index + 1);
+        displayLevel(item.data);
+      });
+    }
+  });
+}
+
+// --- 3. MODE SWITCHING ---
+d3.selectAll("input").on("change", function() {
+  // Redisplay current level with new mode
+  displayLevel(currentNode);
 });
 
 </script>
